@@ -3,28 +3,40 @@ import cv2
 import mediapipe as mp
 import numpy as np
 import joblib
+from math import sqrt
 
 # Load trained model and label encoder
-model = joblib.load('C:/Users/zouha/Desktop/INTERNSHIP_unbc/HPE/classification/data/pose_classifier.pkl')
-label_encoder = joblib.load('C:/Users/zouha/Desktop/INTERNSHIP_unbc/HPE/classification/data/label_encoder.pkl')
+model = joblib.load('C:/Users/zouha/Desktop/INTERNSHIP_unbc/HPE/classification/pose_classifier.pkl')
+label_encoder = joblib.load('C:/Users/zouha/Desktop/INTERNSHIP_unbc/HPE/classification/label_encoder.pkl')
 
 # MediaPipe setup
 mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
 
-# Function to calculate angle between three points
 def calculate_angle(a, b, c):
-    a = np.array(a)
-    b = np.array(b)
-    c = np.array(c)
+    a, b, c = np.array(a), np.array(b), np.array(c)
     radians = np.arctan2(c[1]-b[1], c[0]-b[0]) - np.arctan2(a[1]-b[1], a[0]-b[0])
     angle = np.abs(radians * 180.0 / np.pi)
-    if angle > 180.0:
-        angle = 360 - angle
-    return angle
+    return 360 - angle if angle > 180 else angle
 
-# Initialize webcam
-cap = cv2.VideoCapture(0)
+def calculate_distance(p1, p2):
+    return sqrt(sum((np.array(p2) - np.array(p1)) ** 2))
+
+# Distances (EXACT 16 as per training set)
+distance_pairs = [
+    (11, 15), (12, 16), (23, 27), (24, 28),
+    (23, 15), (24, 16), (11, 27), (12, 28),
+    (23, 16), (24, 15), (13, 14), (25, 26),
+    (15, 16), (27, 28), (23, 27), (24, 28)
+]
+
+# Angles (7)
+angle_triplets = [
+    (14, 12, 24), (13, 11, 23), (26, 24, 25),
+    (24, 26, 28), (23, 25, 27), (16, 14, 12), (15, 13, 11)
+]
+
+cap = cv2.VideoCapture('C:/Users/zouha/Desktop/INTERNSHIP_unbc/HPE/classification/data/pullup_vid.mp4')
 
 with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as pose:
     while cap.isOpened():
@@ -40,52 +52,36 @@ with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as 
 
         if results.pose_landmarks:
             landmarks = results.pose_landmarks.landmark
-
-            # Extract key joints for angle calculations
             try:
-                right_elbow = [landmarks[14].x, landmarks[14].y]
-                right_shoulder = [landmarks[12].x, landmarks[12].y]
-                right_hip = [landmarks[24].x, landmarks[24].y]
+                lm = [(lm.x, lm.y, lm.z) for lm in landmarks]
 
-                left_elbow = [landmarks[13].x, landmarks[13].y]
-                left_shoulder = [landmarks[11].x, landmarks[11].y]
-                left_hip = [landmarks[23].x, landmarks[23].y]
+                angles = [calculate_angle(lm[a], lm[b], lm[c]) for (a, b, c) in angle_triplets]
+                distances = [calculate_distance(lm[i], lm[j]) for (i, j) in distance_pairs]
+                raw_coords = [coord for point in lm for coord in point]
 
-                right_knee = [landmarks[26].x, landmarks[26].y]
-                right_ankle = [landmarks[28].x, landmarks[28].y]
+                features = angles + distances + raw_coords
 
-                left_knee = [landmarks[25].x, landmarks[25].y]
-                left_ankle = [landmarks[27].x, landmarks[27].y]
+                if len(features) != 122:
+                    raise ValueError(f"Feature length mismatch: got {len(features)}, expected 122")
 
-                right_wrist = [landmarks[16].x, landmarks[16].y]
-                left_wrist = [landmarks[15].x, landmarks[15].y]
-
-                # Calculate angles
-                angles = [
-                    calculate_angle(right_elbow, right_shoulder, right_hip),
-                    calculate_angle(left_elbow, left_shoulder, left_hip),
-                    calculate_angle(right_knee, right_hip, left_knee),
-                    calculate_angle(right_hip, right_knee, right_ankle),
-                    calculate_angle(left_hip, left_knee, left_ankle),
-                    calculate_angle(right_wrist, right_elbow, right_shoulder),
-                    calculate_angle(left_wrist, left_elbow, left_shoulder)
-                ]
-
-                # Predict movement
-                prediction = model.predict([angles])[0]
+                prediction = model.predict([features])[0]
                 label = label_encoder.inverse_transform([prediction])[0]
 
-                # Display result
+                # Show prediction probabilities
+                probs = model.predict_proba([features])[0]
+                prob_string = " | ".join(f"{name}: {prob:.2f}" for name, prob in zip(label_encoder.classes_, probs))
+                print(f"Probabilities → {prob_string}")
+
+
+
                 cv2.putText(image, label, (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 2)
 
             except Exception as e:
-                print("Angle calculation error:", e)
+                print("Feature vector error:", e)
 
-            # Draw landmarks
             mp_drawing.draw_landmarks(image, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
 
-        cv2.imshow('Movement Classifier', image)
-
+        cv2.imshow('Movement Classifier (122 Features)', image)
         if cv2.waitKey(5) & 0xFF == ord('q'):
             break
 
